@@ -574,6 +574,15 @@ export function normalizeOpenCodeProInput(input) {
   return flattenAssistantContent(fillReasoningIds(normalizeGatewayInput(input)));
 }
 
+// True only when the routed model lands on opencode-go's deepseek-v4-pro
+// upstream. Its responses-to-chat translator rejects replayed reasoning items
+// without ids and assistant history whose content is a part array, so the pro
+// rewrite must cover every routed request shape - main turns and compaction
+// summaries alike.
+function isProOpenCodeGo(config, model) {
+  return bareModelId(model) === "deepseek-v4-pro" && providerForModel(config, model) === "opencode-go";
+}
+
 // A message is "current" when it follows the last assistant turn. Only those
 // images may reach the upstream: the request is either escalated to the vision
 // model or the main model itself can see images. Images in earlier turns were
@@ -1641,7 +1650,13 @@ export async function relayCompaction(payload, res, services, { signal } = {}, v
     stream: false,
     tools: [],
     tool_choice: "none",
-    input: [...rewriteHistoricalImages(normalizeGatewayInput(payload.input), mediaStore), messageItem(COMPACT_PROMPT)],
+    input: [
+      ...rewriteHistoricalImages(
+        isProOpenCodeGo(config, route.model) ? normalizeOpenCodeProInput(payload.input) : normalizeGatewayInput(payload.input),
+        mediaStore,
+      ),
+      messageItem(COMPACT_PROMPT),
+    ],
   };
   delete summarizeBody.previous_response_id;
   delete summarizeBody.client_metadata;
@@ -1895,8 +1910,7 @@ export async function relayResponses(payload, res, services, { signal } = {}) {
   // opencode's pro route needs the reasoning-id and assistant-content rewrites;
   // every other routed model (flash, official, custom) keeps the plain path so
   // its byte-stable history is never touched.
-  const proOpenCodeGo =
-    bareModelId(route.model) === "deepseek-v4-pro" && providerForModel(config, route.model) === "opencode-go";
+  const proOpenCodeGo = isProOpenCodeGo(config, route.model);
   const normalizedPayload = {
     ...payload,
     input: rewriteHistoricalImages(

@@ -1543,6 +1543,80 @@ test("relayCompaction streams a v2 compaction item over SSE when stream is not f
   }
 });
 
+test("relayCompaction applies the pro rewrite for deepseek-v4-pro@opencode-go", async () => {
+  const sink = collectStream();
+  const res = responseStub(sink);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return summaryResponse("pro compact summary");
+  };
+  const history = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+    { type: "reasoning", content: [{ type: "reasoning_text", text: "think" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "world" }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "more" }] },
+  ];
+  try {
+    const services = {
+      ...compactServices(),
+      knownModels: new Set(["deepseek-v4-flash", "gpt-5.6-luna", "deepseek-v4-pro@opencode-go"]),
+    };
+    const result = await relayCompaction(
+      { model: "deepseek-v4-pro@opencode-go", stream: false, input: history },
+      res,
+      services,
+      {},
+      true,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    const sentInput = calls[0].body.input;
+    const assistant = sentInput.find((item) => item.type === "message" && item.role === "assistant");
+    assert.equal(assistant.content, "world", "assistant output_text array flattens to a string on the pro route");
+    const reasoning = sentInput.find((item) => item.type === "reasoning");
+    assert.match(reasoning.id, /^reasoning_[0-9a-f]{16}$/, "id-less reasoning gains a stable synthesized id");
+    assert.equal(sentInput.at(-1).role, "user");
+    assert.match(sentInput.at(-1).content[0].text, /CONTEXT CHECKPOINT COMPACTION/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("relayCompaction keeps the plain path byte-stable for deepseek-v4-flash", async () => {
+  const sink = collectStream();
+  const res = responseStub(sink);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return summaryResponse("flash compact summary");
+  };
+  const history = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+    { type: "reasoning", content: [{ type: "reasoning_text", text: "think" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "world" }] },
+  ];
+  try {
+    const result = await relayCompaction(
+      { model: "deepseek-v4-flash", stream: false, input: history },
+      res,
+      compactServices(),
+      {},
+      true,
+    );
+    assert.equal(result.ok, true);
+    const sentInput = calls[0].body.input;
+    const assistant = sentInput.find((item) => item.type === "message" && item.role === "assistant");
+    assert.deepEqual(assistant.content, [{ type: "output_text", text: "world" }], "flash history keeps its part array");
+    const reasoning = sentInput.find((item) => item.type === "reasoning");
+    assert.equal(reasoning.id, undefined, "flash reasoning items are not rewritten");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("relayResponses synthesizes v1 replacement history on the compact path", async () => {
   const sink = collectStream();
   const res = responseStub(sink);
